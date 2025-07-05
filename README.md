@@ -118,6 +118,7 @@ data "aws_availability_zones" "available" {}
 resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.1.0/24"
+  map_public_ip_on_launch = true
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
@@ -193,6 +194,7 @@ resource "aws_instance" "ftp_server" {
   instance_type          = var.instance_type
   key_name               = var.key_name
   subnet_id              = var.subnet_id
+   associate_public_ip_address = true
   vpc_security_group_ids = [aws_security_group.ftp_sg.id]
   user_data              = file("${path.module}/../../scripts/install-vsftpd.sh")
 
@@ -649,6 +651,11 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_VAR_github_token: ${{ secrets.TF_VAR_GITHUB_TOKEN }}
+      TF_WORKING_DIR: terraform/
 
     steps:
       - name: Checkout repository
@@ -661,23 +668,24 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Format Check
         run: terraform fmt -check
+        working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Validate
         run: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Plan
         run: terraform plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          TF_VAR_GITHUB_TOKEN: ${{ secrets.TF_VAR_GITHUB_TOKEN }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
 ```
 ---
 
@@ -1082,6 +1090,765 @@ variable "raw_data_bucket" {
 ![](./img/7.terraform-plan.png)
 
 ### terraform apply -auto-approve
+
+![](./img/8.terraform-apply.png)
+
+## CI/CD
+
+### Error
+
+![](./img/9.error.png)
+
+The errors are due to missing IAM permissions for the `github-actions-user`. To fix the `CI/CD` pipeline failure during terraform plan, I need to attach a policy that allows the following actions:
+
+**Required IAM Permissions:**
+
+Here’s a custom policy I can create and attach to the `github-actions-user:`
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2ReadAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeImages",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeAvailabilityZones"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IAMReadAccess",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+What I did:
+- Create a new IAM policy ( `TerraformReadAccessPolicy`).
+
+- Attach it to your github-actions-user.
+
+### terraform apply -auto-approve
+
+![](./img/10.apply.png)
+
+### - Re-run your GitHub Action workflow.
+
+![](./img/11.error.png)
+
+The new errors mean my IAM user `github-actions-user` needs additional permissions:
+
+- `iam:ListRolePolicies` on the TransferFamilyRole IAM role
+- `ec2:DescribeVpcAttribute` on your VPC resource
+
+
+To fix this, I added these actions to my Terraform IAM policy. For example, extended my current `Terraform_ReadAccess_Policy` module like this:
+
+```json
+module "Terraform_ReadAccess_Policy" {
+  source        = "./modules/iam_user_policy_sftp_csv_upload"
+  policy_name   = "TerraformReadAccessPolicy"
+  iam_user_name = var.iam_user_name
+  description   = "Allow necessary read access for Terraform EC2 and IAM roles"
+
+  policy_statements = [
+    {
+      Sid    = "EC2ReadAccess"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeImages",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcAttribute"
+      ]
+      Resource = "*"
+    },
+    {
+      Sid    = "IAMReadAccess"
+      Effect = "Allow"
+      Action = [
+        "iam:GetRole",
+        "iam:ListRolePolicies"
+      ]
+      Resource = "*"
+    }
+  ]
+}
+```
+
+**Why?**
+
+- `iam:ListRolePolicies` allows Terraform to list inline policies attached to the IAM role (needed when managing or reading roles).
+
+- `ec2:DescribeVpcAttribute` is required to get VPC attributes like enableDnsHostnames.
+
+### After updating the policy, `re-apply` it to the IAM user, then run my `Terraform plan/apply again`.
+
+### Error
+
+![](./img/12.error.png)
+
+**Problem Summary:**
+
+My Terraform run failed with errors like:
+
+- `iam:GetRolePolicy` permission denied on the TransferFamilyRole.
+
+- `ec2:DescribeSecurityGroups` permission denied.
+
+- `ec2:DescribeSubnets` permission denied.
+
+These errors indicate that the IAM user (`github-actions-user`) Terraform uses lacks permissions to read necessary AWS resources during plan/apply.
+
+### How I Solved It Step-by-Step:
+
+**1. Identified Missing Permissions:**
+
+  The error messages clearly pointed to these missing permissions:
+  -  `iam:GetRolePolicy` on the IAM role TransferFamilyRole
+  -  `ec2:DescribeSecurityGroups` to read security group info.
+  -  `ec2:DescribeSubnets` to read subnet details.
+
+**2. Reviewed Existing IAM Policies:**
+
+I had a policy module that attached some permissions to the IAM user, but these specific permissions were missing.
+
+**3. Decided to Extend the Existing IAM Policy Module:**
+
+Instead of creating a separate module for these permissions, you added them to your existing Terraform module responsible for IAM user policies — this keeps policies organized and manageable.
+
+**4. Added the Required Actions to the IAM Policy Statements:**
+
+Updated my IAM policy like this:
+
+- Added `iam:GetRolePolicy` alongside other IAM read actions (`iam:GetRole, iam:ListRolePolicies`).
+
+- Added `ec2:DescribeSecurityGroups` and `ec2:DescribeSubnets` alongside other EC2 read permissions (`ec2:DescribeImages, ec2:DescribeVpcs`, etc.).
+
+**5. Applied the Updated Policy:**
+
+I applied the Terraform changes, which updated the IAM policy attached to `github-actions-user` with the new permissions.
+
+**6. Re-Ran Terraform Plan and Apply:**
+
+### Error
+
+![](./img/13.error-2.png)
+
+This error indicates the `github-actions-user` IAM user is missing two critical permissions needed by Terraform:
+
+- `iam:ListAttachedRolePolicies` on the TransferFamilyRole IAM role
+
+- `ec2:DescribeInstances` on EC2 instances
+
+**How I fixed it:**
+
+I need to add these permissions to the IAM policy attached to `github-actions-user`.
+
+### Updated Terraform IAM policy snippet (add these permissions):
+
+```json
+module "aws_iam_user" {
+  source        = "./modules/aws_iam_user"
+  iam_user_name = var.iam_user_name
+}
+
+# Store AWS Access Key ID in GitHub repository secrets
+
+resource "github_actions_secret" "aws_access_key_id" {
+  repository      = var.github_repo
+  secret_name     = "AWS_ACCESS_KEY_ID"
+  plaintext_value = module.aws_iam_user.access_key_id
+}
+
+# Store AWS Secret Access Key in GitHub repository secrets
+resource "github_actions_secret" "aws_secret_access_key" {
+  repository      = var.github_repo
+  secret_name     = "AWS_SECRET_ACCESS_KEY"
+  plaintext_value = module.aws_iam_user.secret_access_key
+}
+
+####################################################################
+# Project: Provision EC2 or AWS Transfer for SFTP CSV Upload (Spike)
+####################################################################
+
+
+module "network" {
+  source = "./modules/network"
+}
+
+module "ec2_sftp" {
+  source        = "./modules/ec2_sftp"
+  instance_type = var.instance_type
+  key_name      = var.key_name
+  vpc_id        = module.network.vpc_id
+  subnet_id     = module.network.subnet_id
+  allowed_ips   = var.allowed_ips
+}
+
+module "aws_transfer_sftp" {
+  source        = "./modules/aws_transfer_sftp"
+  iam_role_name = var.iam_role_name
+  s3_bucket     = var.s3_transfer_bucket
+}
+
+module "iam_user_policy_sftp_csv_upload" {
+  source        = "./modules/iam_user_policy_sftp_csv_upload"
+  policy_name   = "S3AccessPolicyForCSVUpload"
+  iam_user_name = var.iam_user_name
+  description   = "Policy to allow S3 access for CSV upload"
+
+  policy_statements = [
+    {
+      Sid    = "AllowS3FullAccess"
+      Effect = "Allow"
+      Action = "s3:*"
+      Resource = [
+        "arn:aws:s3:::${var.clean_data_bucket}",
+        "arn:aws:s3:::${var.clean_data_bucket}/*",
+        "arn:aws:s3:::${var.raw_data_bucket}",
+        "arn:aws:s3:::${var.raw_data_bucket}/*"
+      ]
+    }
+  ]
+}
+
+module "iam_user_policy_transfer_tag" {
+  source        = "./modules/iam_user_policy_sftp_csv_upload"
+  policy_name   = "TransferTagPolicy"
+  iam_user_name = var.iam_user_name
+  description   = "Allow tagging for AWS Transfer Family server"
+
+  policy_statements = [
+    {
+      Sid    = "AllowTransferTagging"
+      Effect = "Allow"
+      Action = [
+        "transfer:TagResource",
+        "transfer:CreateServer",
+        "transfer:DescribeServer",
+        "transfer:DeleteServer"
+      ]
+      Resource = "*"
+    }
+  ]
+}
+
+module "Terraform_ReadAccess_Policy" {
+  source        = "./modules/iam_user_policy_sftp_csv_upload"
+  policy_name   = "TerraformReadAccessPolicy"
+  iam_user_name = var.iam_user_name
+  description   = "Allow necessary read access for Terraform EC2 and IAM roles"
+
+  policy_statements = [
+    {
+      Sid    = "EC2ReadAccess"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeImages",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeInstances" # <--- Add this line
+      ]
+      Resource = "*"
+    },
+
+    {
+      Sid    = "EC2DescribeInstanceTypes"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeInstanceTypes"
+      ]
+      Resource = "*"
+    },
+
+    {
+      Sid    = "AllowEC2DescribeInstanceTypes"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeInstanceTypes"
+      ]
+      Resource = "*"
+    },
+
+    {
+      Sid    = "AllowEC2DescribeTags"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeTags"
+      ]
+      Resource = "*"
+    },
+
+    {
+      Sid    = "AllowDescribeInstanceAttribute",
+      Effect = "Allow",
+      Action = [
+        "ec2:DescribeInstanceAttribute"
+      ],
+      Resource = "*"
+    },
+
+    {
+      Sid    = "AllowDescribeVolumes",
+      Effect = "Allow",
+      Action = [
+        "ec2:DescribeVolumes"
+      ],
+      Resource = "*"
+    },
+
+    {
+      Sid    = "AllowDescribeInstanceCreditSpecifications",
+      Effect = "Allow",
+      Action = [
+        "ec2:DescribeInstanceCreditSpecifications"
+      ],
+      Resource = "*"
+    },
+
+    {
+
+      Sid    = "IAMReadAccess"
+      Effect = "Allow"
+      Action = [
+        "iam:GetRole",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies" # <--- Add this line
+      ]
+      Resource = "*"
+    }
+  ]
+}
+```
+Apply the updated policy so that Terraform can read the necessary IAM role and EC2 instance metadata during provisioning.
+
+## Resolution of IAM Permission Issues for Terraform GitHub Actions Pipeline
+
+### Issue:
+
+During Terraform runs in the GitHub Actions pipeline, multiple AWS IAM permission errors occurred for the user `github-actions-user`. These errors prevented Terraform from reading necessary EC2 and IAM resources, resulting in failures such as:
+
+- Unauthorized access to EC2 instance details (`DescribeInstanceTypes`, `DescribeTags`, `DescribeInstanceAttribute`, `DescribeVolumes`, `DescribeInstanceCreditSpecifications`)
+
+- Unauthorized access to IAM role policies (`GetRolePolicy`, `ListAttachedRolePolicies`, etc.)
+
+- Unauthorized access to EC2 network components (`Security Groups`, `Subnets`)
+
+### Root Cause:
+
+The `github-actions-user` IAM user lacked sufficient read permissions required by Terraform to query EC2 and IAM resources during plan and apply stages.
+
+### Solution:
+
+The IAM policy attached to the `github-actions-user` was updated to include the following AWS permissions:
+
+- `ec2:DescribeInstanceTypes`
+
+- `ec2:DescribeTags`
+
+- `ec2:DescribeInstanceAttribute`
+
+- `ec2:DescribeVolumes`
+
+- `ec2:DescribeInstanceCreditSpecifications`
+
+- `ec2:DescribeSecurityGroups`
+
+- `ec2:DescribeSubnets`
+
+- `iam:GetRolePolicy`
+
+- `iam:ListAttachedRolePolicies`
+
+- `iam:ListRolePolicies`
+
+- `iam:GetRole`
+
+- Other related read permissions required by Terraform modules
+
+### Outcome:
+
+After applying the updated IAM policy with these expanded permissions, the GitHub Actions `Terraform pipeline` **successfully** executed all stages including:
+
+- Terraform init, validate, plan, and apply
+
+- Proper querying of EC2 instances, IAM roles, and network resources
+
+- No further authorization errors observed
+
+This resolved all access-denied errors and allowed full automation of the infrastructure provisioning process through the pipeline.
+
+![](./img/14.apply-successful.png)
+
+---
+
+## Step: Move SSH Key to Default `.ssh` Directory and Connect to EC2
+
+After successfully provisioning the EC2 instance, the `SSH` private key (`ftp-key.pem`) was located in the project directory. To standardize key management and enable easier SSH access, the key was moved to the user's default SSH directory:
+
+```
+ls -ld ~/.ssh
+
+cp "/c/Users/MTECH COMPUTERS/Documents/darey-learning/projects/ETL_HEALTH_CARE/pulsegrid-etl-xpod-06-25/ftp-key.pem" ~/.ssh/
+```
+
+Next, the file permissions were verified or updated (if needed) to ensure they are secure enough for SSH:
+
+```
+chmod 400 ~/.ssh/ftp-key.pem
+```
+
+
+### Run `terraform apply` to provision additional network resources that facilitate SSH access to the instance.
+
+![](./img/16.new-apply-with-networking.png)
+
+Finally, the EC2 instance was accessed using the simplified path:
+
+```
+ssh -i ~/.ssh/ftp-key.pem ubuntu@public_ip
+```
+![](./img/17.ssh-successful.png)
+
+This approach avoids using a full path each time and aligns with common Linux/Unix practices for key storage.
+
+---
+
+## Section: Verifying FTP Server & Adding FTP Users
+
+### Step 1: Confirm `vsftpd` is Running
+
+**Purpose:**
+
+Ensure the FTP service is properly installed and running before proceeding with user setup.
+
+**What I did:**
+
+```bash
+which vsftpd
+sudo systemctl status vsftpd
+ftp localhost
+```
+- This command checks the status of the `vsftpd` service (**Very Secure FTP Daemon**).
+
+- If it's active (running), you can proceed to user setup.
+
+![](./img/18.check-sftp-status.png)
+
+### Step 2: Add FTP User Accounts
+
+**Purpose:**
+
+Create dedicated Linux user accounts that will serve as FTP users with access to their respective directories.
+
+**What I did:**
+
+To enable users to upload/download files:
+
+1. Create a system user for FTP:
+   
+   ```bash
+   sudo adduser ftpuser
+   ```
+  ![](./img/19.sudo-add-user.png)
+
+- This creates a user with a home directory.
+
+- You are prompted to set a password and fill in user info.
+
+2. Restrict SSH access:
+To restrict this user to `FTP` only (no `SSH`), I would add their shell to `/etc/shells` or use `/sbin/nologin` depending on your distro and policy.
+
+**Set user shell to `/usr/sbin/nologin`**
+
+```bash
+sudo usermod -s /usr/sbin/nologin ftpuser
+```
+
+### Step 3: Configure Directory Permissions
+
+**Purpose:**
+
+Ensure the FTP user has access only to their assigned directory, and secure the server by preventing navigation outside allowed paths.
+
+**What I did:**
+
+1. Create a directory for uploads
+
+```bash
+sudo mkdir -p /home/ftpuser/uploads
+```
+
+2. Set ownership and permissions:
+
+```bash
+sudo chown ftpuser:ftpuser /home/ftpuser/uploads
+sudo chmod 755 /home/ftpuser
+sudo chmod 755 /home/ftpuser/uploads
+```
+
+Ensures user can write to uploads directory but not change parent settings.
+
+![](./img/20.deny-ssh-config-user.png)
+
+### Step 4: Test FTP Access
+
+**Purpose:**
+
+Confirm that the FTP user can connect and upload/download files using the server’s FTP service.
+
+**What I did:**
+
+1. Create a Sample File for Upload
+
+Still logged into the EC2 instance (as ubuntu or root), create a test file:
+
+**Use `tee` with `sudo`**
+
+```bash
+echo "This is a test upload file for FTP server." | sudo tee /home/ftpuser/uploads/sample_upload.txt > /dev/null
+```
+This lets me write the file with elevated permissions without being blocked by the shell.
+
+**OR Change Ownership or Permissions**
+
+Since `ftpuser` owns the folder and I want `ubuntu` to write there, I could:
+
+```bash
+sudo chown ubuntu:ubuntu /home/ftpuser/uploads
+```
+
+1. Install FTP Client (If not present)
+
+Since am testing FTP from the EC2 instance itself (using ftp localhost), I will install the FTP client:
+
+```bash
+sudo apt update && sudo apt install ftp -y
+```
+
+2. Test Local FTP Access (From EC2 to Itself)
+
+```bash
+ftp localhost
+```
+
+- Username: `ftpuser`
+
+- Password: `password I set earlier`
+
+![](./img/21.ftp-local.png)
+
+
+#### ❌ What’s Failing:
+
+The login for `ftpuser` results in:
+
+```bash
+530 Login incorrect.
+```
+
+This strongly suggests:
+
+`vsFTPd` is blocking users with `/usr/sbin/nologin` from logging in — depending on its configuration.
+
+### Change the Shell Temporarily for Testing
+
+Change from `/usr/sbin/nologin` to `/bin/bash` just for **testing**:
+
+Then try logging in again:
+
+```bash
+ftp localhost
+```
+
+![](./img/22.failed-success-onbash.png)
+
+It works now, it means my `FTP server` is configured to reject `users` with `/usr/sbin/nologin`.
+
+### Configure vsFTPd to Allow `/usr/sbin/nologin` Shells
+
+I want to go back to using `/usr/sbin/nologin` (as I should for security), I will do this:
+
+1. Open the vsftpd config:
+
+```bash
+sudo nano /etc/vsftpd.conf
+```
+Add or ensure these lines are present and uncommented:
+
+```bash
+pam_service_name=vsftpd
+```
+
+![](./img/23.pam-present.png)
+
+Then edit the PAM file:
+
+```bash
+sudo nano /etc/pam.d/vsftpd
+```
+Make sure this line is not blocking nologin (some distros do):
+
+```bash
+auth required pam_shells.so
+```
+
+If that line exists, **comment it out** like this:
+
+```bash
+#auth required pam_shells.so
+```
+![](./img/24.comment-out.png)
+
+`pam_shells.so` restricts login to users with valid shells listed in `/etc/shells`.
+
+Finally, restart `vsftpd`:
+
+```bash
+sudo systemctl restart vsftpd
+```
+
+### Retest FTP Login
+
+After all this, switch `ftpuser` back to `/usr/sbin/nologin`:
+
+```bash
+sudo usermod -s /usr/sbin/nologin ftpuser
+```
+Then test again:
+
+```bash
+ftp localhost
+```
+
+![](./img/25.login-successful.png)
+
+**Once connected:**
+
+```bash
+ls                        # List files
+cd uploads                # Navigate to uploads folder
+put sample_upload.txt     # Upload a file
+get sample_upload.txt     # Download the same file
+bye                       # Exit FTP session
+```
+![](./img/25.ls.png)
+
+![](./img/26.get-put.png)
+
+---
+
+### Test Remote FTP Access (From Your Local Machine)
+
+On my local machine (`PowerShell`, `Terminal`, or `Git Bash`):
+
+```bash
+ftp <public-ip-address-of-ec2>
+```
+
+Enter:
+
+- Name: ftpuser
+
+- Password: same as set on server.
+
+![](./img/27.ftp-from-local-gitbash.png)
+
+### Prepare a file to `upload`:
+
+```bash
+echo "This is a local upload test file." > localfile.txt
+```
+
+Then from the FTP prompt:
+
+```bash
+ls                         # See available files
+cd uploads                 # Go into uploads folder
+get sample_upload.txt      # Download it to your local machine
+put localfile.txt          # Upload a file (you must have this file in your current directory)
+bye                        # Exit
+```
+
+![](./img/30.issues-resolved.png)
+
+### FTP Passive Mode Resolution Summary
+
+#### Configuration Fixes:
+
+**1. Disabled IPv6-only mode**
+   
+   - Set `listen_ipv6=NO` in `/etc/vsftpd.conf`
+**2. Enabled IPv4 listening**
+   
+   - Set `listen=YES` to allow standard IPv4 connections
+
+**Set passive mode options:**
+
+```bash
+pasv_enable=YES
+pasv_min_port=30000
+pasv_max_port=31000
+pasv_address=52.73.176.44  # Your EC2 public IP
+```
+**4. Restarted `vsftpd` to apply changes:**
+
+```bash
+sudo systemctl restart vsftpd
+```
+#### EC2 Security Group Updates:
+
+- Allowed TCP ports `30000–31000` (FTP passive data)
+
+- Opened ports to your IP or `0.0.0.0/0` for public testing
+
+### Final Result:
+
+- FTP user `ftpuser` can now upload (`put`) and download (`get`) files
+
+- Passive mode connections succeed with correct `public IP`
+
+- Transfers work externally (tested with IP: `52.73.176.44`)
+
+---
+
+On Windows and FTP via GUI (e.g., FileZilla), connect using:
+
+- Host: Public IP of your EC2
+
+- Username: ftpuser
+
+- Password: set password
+
+- Port: 21
+
+
+### NOTE: Forgot password
+
+#### Check User Exists and Has a Valid Home Directory
+
+```bash
+getent passwd ftpuser
+```
+
+```bash
+sudo passwd ftpuser
+```
+
+
+
 
 
 
