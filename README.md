@@ -10,30 +10,49 @@ Provision EC2 instance or AWS Transfer Family SFTP server for secure CSV file up
 ### FILE STRUCTURE
 
 ```
- terraform/
- ├── main.tf
- ├── variables.tf
- ├── outputs.tf
- ├── terraform.tfvars
- ├── README.md
- ├── .github/
- │   └── workflows/
- │       └── terraform.yml
- ├── scripts/
- │   └── install-vsftpd.sh
- └── modules/
-     ├── network/
-     │   ├── main.tf
-     │   ├── variables.tf
-     │   └── outputs.tf
-     ├── ec2_sftp/
-     │   ├── main.tf
-     │   ├── variables.tf
-     │   └── outputs.tf
-     └── aws_transfer_sftp/
-         ├── main.tf
-         ├── variables.tf
-         └── outputs.tf
+terraform/
+├── main.tf
+├── variables.tf
+├── outputs.tf
+├── terraform.tfvars
+├── backend.tf                 # (optional: for remote backend like S3)
+├── data.tf                    # for aws_caller_identity
+├── README.md                  # already present
+├── .ssh/                      # stores generated private keys by Terraform
+│   ├── idoko.pem
+│   ├── ernest.pem
+│   └── ...
+├── .github/
+│   └── workflows/
+│       └── terraform.yml
+├── scripts/
+│   └── install-vsftpd.sh
+├── modules/
+│   ├── network/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── ec2_sftp/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── aws_transfer_sftp/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── ssh_key_pair/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── iam_user_policy_sftp_csv_upload/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── aws_iam_user/          # IAM user creation for GitHub Actions
+│       ├── main.tf
+│       ├── variables.tf
+│       └── outputs.tf
+
 ```
 
 ---
@@ -44,7 +63,7 @@ Provision EC2 instance or AWS Transfer Family SFTP server for secure CSV file up
 
 - Prepare environment with AWS CLI, Terraform, AWS credentials, and SSH key pair for EC2 access.
 
-**What I did:**
+**Steps Taken:**
 
 - Configured AWS CLI locally with proper credentials.
 - Installed Terraform on my machine.
@@ -68,7 +87,7 @@ chmod 400 ftp-key.pem
 
 - Install and configure `vsftpd` FTP server on EC2 instance automatically on launch.
 
-**What I did:**
+**Steps Taken:**
 - Wrote shell script to update apt packages, install `vsftpd`, configure for secure FTP (**disable anonymous, enable local users and write**), and **enable service**.
 
 **Content:**
@@ -95,7 +114,7 @@ systemctl enable vsftpd
 
 - Provision dedicated `VPC` and `subnet` for hosting `EC2` and **Transfer Family services**.
 
-**What I did:**
+**Steps Taken:**
 
 - Created `aws_vpc` resource with CIDR block `10.0.0.0/16`.
 - Created a `subnet` in the first availability zone with CIDR block `10.0.1.0/24`.
@@ -148,7 +167,7 @@ output "subnet_id" {
 
 - Provision EC2 instance with `vsftpd` installed to simulate FTP server for CSV upload.
 
-**What I did:**
+**Steps Taken:**
 
 - Used Ubuntu 20.04 AMI data source for latest AMI.
 - Created a security group allowing TCP port 21 inbound from allowed IPs.
@@ -301,7 +320,7 @@ output "public_ip" {
 
 - Create AWS **Transfer Family SFTP server** for modern, managed `SFTP` file upload to `S3`.
 
-**What I did:**
+**Steps Taken:**
 
 - Created IAM role with assume role policy for `transfer.amazonaws.com` service.
 - Attached inline policy granting full S3 access to specified bucket.
@@ -383,7 +402,7 @@ output "endpoint" {
 
 - Attach required policies to existing GitHub user `github-actions-user` for `S3` access.
 
-**What I did:**
+**Steps Taken:**
 
 - Pulled external terraform module "`iam_user_policy`" from **GitHub feature branch**.
 - Passed GitHub username and S3 bucket names as variables.
@@ -466,7 +485,7 @@ module "iam_user_policy_sftp_csv_upload" {
 
 - Tie all modules together with proper input variables.
 
-**What I did:**
+**Steps Taken:**
 
 - Called `network`, `ec2_sftp`, `aws_transfer_sftp`, and `iam_user_policy` modules.
 - Passed variables via `terraform.tfvars`.
@@ -611,7 +630,7 @@ output "transfer_endpoint" {
 
 - Define inputs for modular and root terraform configurations.
 
-**What I did:**
+**Steps Taken:**
 
 - Declared variables such as `github_user_name`, `s3_bucket`, `raw_bucket`, `key_name`, `instance_type`, `allowed_ips`, `iam_role_name`, and `s3_transfer_bucket`.
 - Provided environment-specific values in `terraform.tfvars`.
@@ -630,7 +649,7 @@ secret
 
 - Automate `Terraform init`, `plan`, `validate`, and `apply` on `push/pull` requests.
 
-**What I did:**
+**Steps Taken:**
 
 - Configured workflow to run on push to main and feature branches.
 - Used Hashicorp's official Terraform setup action.
@@ -775,7 +794,7 @@ This makes the project:
 
 ### Step 10: modules/iam_user_policy_sftp_csv_upload/main.tf
 *Purpose:* Create IAM Policy for Transfer Family Tagging and Attach to User
-*What I did:* Created policy allowing actions like transfer:TagResource, and attached it to the IAM user
+*Steps Taken:* Created policy allowing actions like transfer:TagResource, and attached it to the IAM user
 
 ```
 resource "aws_iam_policy" "custom_user_policy" {
@@ -798,7 +817,7 @@ resource "aws_iam_user_policy_attachment" "attach_policy" {
 
 ### Step 11: Root main.tf (IAM Tagging Policy)
 *Purpose:* Attach a separate IAM policy to allow transfer:* operations
-*What I did:* Added a new root-level module instantiation to bind the new tagging policy to the IAM user
+*Steps Taken:* Added a new root-level module instantiation to bind the new tagging policy to the IAM user
 
 ```
 module "iam_user_policy_transfer_tag" {
@@ -828,41 +847,55 @@ module "iam_user_policy_transfer_tag" {
 ### File Structure
 
 ```css
-ftp-sftp-upload-project/
+terraform/
 ├── main.tf
 ├── variables.tf
 ├── outputs.tf
 ├── terraform.tfvars
-├── README.md
+├── backend.tf                 # (optional: for remote backend like S3)
+├── data.tf                    # for aws_caller_identity
+├── README.md                  # already present
+├── .ssh/                      # stores generated private keys by Terraform
+│   ├── idoko.pem
+│   ├── ernest.pem
+│   └── ...
 ├── .github/
 │   └── workflows/
 │       └── terraform.yml
 ├── scripts/
 │   └── install-vsftpd.sh
-└── modules/
-    ├── network/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    ├── ec2_sftp/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    ├── aws_transfer_sftp/
-    │   ├── main.tf
-    │   ├── variables.tf
-    │   └── outputs.tf
-    └── iam_user_policy_sftp_csv_upload/
-        ├── main.tf
-        ├── variables.tf
-        └── outputs.tf
+├── modules/
+│   ├── network/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── ec2_sftp/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── aws_transfer_sftp/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── ssh_key_pair/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── iam_user_policy_sftp_csv_upload/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── aws_iam_user/          # IAM user creation for GitHub Actions
+│       ├── main.tf
+│       ├── variables.tf
+│       └── outputs.tf
 ```
 
 ### Step 1: `modules/iam_user_policy_sftp_csv_upload/main.tf`
 
 **Purpose:** Define IAM policy resource and attach it to existing IAM user for required permissions.
 
-**What I did:** Created local module to avoid dependency on external modules and ensure uniqueness.
+**Steps Taken:** Created local module to avoid dependency on external modules and ensure uniqueness.
 
 ```hcl
 resource "aws_iam_policy" "custom_user_policy" {
@@ -917,7 +950,7 @@ output "policy_arn" {
 ### Step 4: Root `main.tf`
 
 **Purpose:** Use the local iam_user_policy_sftp_csv_upload module, passing the required S3 bucket names and IAM user.
-**What I did:** Updated module reference and variables for policy attachment.
+**Steps Taken:** Updated module reference and variables for policy attachment.
 
 ```hcl
 # Call IAM module and push credentials to GitHub Secrets.
@@ -1130,7 +1163,7 @@ Here’s a custom policy I can create and attach to the `github-actions-user:`
   ]
 }
 ```
-What I did:
+Steps Taken:
 - Create a new IAM policy ( `TerraformReadAccessPolicy`).
 
 - Attach it to your github-actions-user.
@@ -1534,7 +1567,7 @@ This approach avoids using a full path each time and aligns with common Linux/Un
 
 Ensure the FTP service is properly installed and running before proceeding with user setup.
 
-**What I did:**
+**Steps Taken:**
 
 ```bash
 which vsftpd
@@ -1553,7 +1586,7 @@ ftp localhost
 
 Create dedicated Linux user accounts that will serve as FTP users with access to their respective directories.
 
-**What I did:**
+**Steps Taken:**
 
 To enable users to upload/download files:
 
@@ -1583,7 +1616,7 @@ sudo usermod -s /usr/sbin/nologin ftpuser
 
 Ensure the FTP user has access only to their assigned directory, and secure the server by preventing navigation outside allowed paths.
 
-**What I did:**
+**Steps Taken:**
 
 1. Create a directory for uploads
 
@@ -1609,7 +1642,7 @@ Ensures user can write to uploads directory but not change parent settings.
 
 Confirm that the FTP user can connect and upload/download files using the server’s FTP service.
 
-**What I did:**
+**Steps Taken:**
 
 1. Create a Sample File for Upload
 
@@ -1854,7 +1887,7 @@ sudo passwd ftpuser
 
 **Purpose:** To avoid key mismatch or confusion, I deleted the manually created `ftp-key` from AWS EC2 and local `.pem` file so I can switch completely to a fully Terraform-managed SSH key strategy.
 
-**What I did:**
+**Steps Taken:**
 
 - Deleted the key from AWS using AWS CLI.
 
@@ -1876,7 +1909,7 @@ rm -f ~/.ssh/ftp-key.pem
 
 To automate the secure generation of SSH key pairs (public/private) for SFTP users using Terraform. This ensures consistency, avoids manual steps, and supports multi-user dynamic creation.
 
-**What I Did**
+**Steps Taken**
 
 I created a reusable Terraform module to:
 
@@ -1953,7 +1986,7 @@ output "private_key_files" {
 
 To generate SSH keys for **users** `ernest` and `idoko` and make their public keys available for provisioning in SFTP server configuration.
 
-**What I Did**
+**Steps Taken**
 
 I called the `ssh_key_pair` module in the root `main.tf` using a map of usernames.
 
@@ -1999,7 +2032,7 @@ sftp_users = {
 
 To create AWS-managed SFTP users using the public keys generated by the module and store their files in the raw data bucket.
 
-**What I Did**
+**Steps Taken**
 
 I extended the `aws_transfer_sftp` module to:
 
@@ -2274,7 +2307,7 @@ I will add a new instance of that module in my root `main.tf`, specifically for 
 
 To grant the authenticated IAM user sufficient permission to manage **AWS Transfer Family users** (`create`, `update`, `delete`, `list`). This is required to provision SFTP users programmatically using Terraform.
 
-**What I Did:**
+**Steps Taken:**
 
 I extended the existing IAM user policy configuration by creating a new instance of the reusable `iam_user_policy_sftp_csv_upload` module. This new instance defines a policy (`TransferUserManagementPolicy`) that allows key AWS Transfer Family user management actions.
 
@@ -2510,90 +2543,342 @@ terraform apply -target=module.iam_user_policy_transfer_user_management
 
 ![](./img/40.force-apply.png)
 
-========================
 
+### Testing the AWS Managed SFTP Setup with `ernest` and `idoko`
 
-## Extending Existing Configuration to Provision AWS Transfer Family `SFTP Users`
+**Purpose**
 
-### Purpose
+To verify that:
 
-I want to manage **AWS Transfer Family SFTP** users directly through Terraform, so I can easily add, update, or remove users along with their SSH public keys. This helps keep my project consistent, repeatable, and collaborative by managing user access infrastructure-as-code. I also want each user’s home directory to be their folder on the raw data S3 bucket.
+1. The AWS Transfer Family (`SFTP`) server is correctly set up.
+2. The users (`ernest`, `idoko`) can securely authenticate using their respective **SSH keys**.
+3. Files (specifically `.csv`) can be uploaded to and retrieved from the **raw S3 bucket**.
+4. The permissions and bucket mapping are correctly configured.
 
-**What I Did**
-
-I extended the existing `aws_transfer` module by introducing **user-level configuration**. Each user is mapped to a public **SSH key** and a dedicated subdirectory within a **shared S3 bucket**. This isolates user access and enforces file security.
-
-### `main.tf` (Extended Section)
+#### Step 1: List SSH Public Keys on AWS Console
 
 **Purpose:**
 
-Allows secure, isolated access for each SFTP user by assigning unique home directories and SSH key authentication.
+To ensure that Terraform successfully uploaded the public SSH keys for each user (`ernest`, `idoko`) to the AWS Transfer Family.
 
-**What I Did:**
+**Steps Taken:**
 
-Used `for_each` to dynamically loop through users defined in `terraform.tfvars`. Each user gets a folder in the S3 bucket and their SSH key loaded automatically.
+Terraform created and registered public SSH keys for each user. You can confirm this via the AWS Console:
+
+- Go to **AWS Transfer Family** > **Users**
+
+- Select each user (`ernest`, `idoko`)
+
+- Under SSH public keys, confirm fingerprint and creation time
+
+## Error
+
+![](./img/42.error.png)
+
+**Reason**
+
+This error typically occurs when your IAM user or role lacks permissions required by the AWS Console UI itself — even though CLI works.
+
+The AWS Console often uses additional API calls (like `List*`, `Describe*`, `Get*` for `roles`, `tags`, and `CloudTrail`) behind the scenes to load UI components — even for viewing a page, not just performing an action.
+
+### Fix: Add Additional Console-Friendly Permissions
+
+To resolve this, I will extend my IAM policy to include:
+
+### Missing (Required for Console)
+
+These are actions not in your policy that are used by the AWS Console to load and render pages:
+
+| **Missing Action**                   | **Why It's Needed**                                               |
+|-------------------------------------|-------------------------------------------------------------------|
+| `transfer:ListServers`              | Console tries to list Transfer Family servers                     |
+| `iam:GetRole`                       | To resolve the IAM roles assigned to users                        |
+| `iam:ListRoles`                     | Console populates role dropdowns or details                       |
+| `iam:GetUser`                       | To show the details of IAM users                                  |
+| `iam:ListUsers`                     | Console might try to list users (e.g. audit)                      |
+| `iam:ListAttachedUserPolicies`      | For showing attached policies in console                          |
+| `iam:GetPolicy`                     | To read details of managed policies                               |
+| `iam:ListPolicies`                  | For listing policies in dropdowns                                 |
+
+Here's my updated Terraform configuration block with additional necessary permissions to support both `CLI` and **AWS Console operations** for **AWS Transfer Family** and **IAM resources**. These additions will help avoid the Unable to load content issue in the console and prevent further access errors.
 
 ```hcl
-# ===========================================
-# Extend: Add AWS Transfer Family Users
-# ===========================================
-resource "aws_transfer_user" "sftp_users" {
-  for_each = var.sftp_users
+##############################################################################
+# IAM Policy Module: Allow Transfer Family User Management for SFTP Users
+##############################################################################
+# This module attaches IAM policies to allow managing AWS Transfer Family users,
+# including operations like creating, updating, deleting users, and handling SSH keys.
+# It also includes extra IAM and Transfer permissions needed for Console access.
+##############################################################################
+module "iam_user_policy_transfer_user_management" {
+  source   = "./modules/iam_user_policy_sftp_csv_upload"
+  for_each = var.iam_user_policy_map
 
-  server_id            = aws_transfer_server.sftp_server.id
-  user_name            = each.key
-  role                 = aws_iam_role.transfer_role.arn
-  home_directory       = "/${var.s3_bucket}/${each.key}"
-  ssh_public_key_body  = file(each.value.public_key_path)
+  policy_name   = each.value
+  iam_user_name = each.key
+  description   = "Allow managing AWS Transfer Family users"
 
-  tags = {
-    Environment = "Dev"
-    Owner       = each.key
-  }
+  policy_statements = [
+    {
+      Sid    = "AllowTransferUserManagement"
+      Effect = "Allow"
+      Action = [
+        # Transfer Family user operations
+        "transfer:CreateUser",
+        "transfer:UpdateUser",
+        "transfer:DeleteUser",
+        "transfer:ListUsers",
+        "transfer:DescribeUser",
+        "transfer:ImportSshPublicKey",
+        "transfer:DeleteSshPublicKey",
+        "transfer:ListSshPublicKeys",
+        "transfer:TagResource",
+        "transfer:UntagResource",
+        "transfer:DescribeServer",
+        "transfer:ListTagsForResource",
+        "transfer:ListServers",               # Needed for Console UI
+        # IAM permissions for resolving role/user details in Console
+        "iam:GetRole",
+        "iam:ListRoles",
+        "iam:GetUser",
+        "iam:ListUsers",
+        "iam:ListAttachedUserPolicies",
+        "iam:GetPolicy",
+        "iam:ListPolicies"
+      ]
+      Resource = [
+        # Transfer Family resources
+        "arn:aws:transfer:${var.region}:${data.aws_caller_identity.current.account_id}:server/*",
+        "arn:aws:transfer:${var.region}:${data.aws_caller_identity.current.account_id}:user/*",
+        "arn:aws:transfer:${var.region}:${data.aws_caller_identity.current.account_id}:user/*/*",
+        # IAM resources (required for List/Get actions in Console UI)
+        "*"
+      ]
+    }
+  ]
 }
 ```
-
-### `variables.tf` (New Variable for Users)
+#### Re-run:
 
 ```hcl
-# ===========================================
-# Variable: SFTP Users and Public Key Paths
-# ===========================================
-variable "sftp_users" {
-  description = "Map of usernames to public key file paths"
-  type = map(object({
-    public_key_path = string
-  }))
-}
+terraform apply -auto-approve
 ```
 
-### `terraform.tfvars` (Updated with Users)
+![](./img/43.terraform-apply.png)
+
+#### Console Output
+
+![](./img/44.console-output.png)
+
+![](./img/45.console-output2.png)
+
+![](./img/46.console-ouput-ernest.png)
+
+![](./img/47.console-output-idoko.png)
+
+#### Alternatively, use the AWS CLI:
 
 ```hcl
-sftp_users = {
-  john = {
-    public_key_path = "~/.ssh/john.pub"
-  },
-  alice = {
-    public_key_path = "~/.ssh/alice.pub"
-  }
-}
+aws transfer list-users --server-id s-3c9c7d5391934e529
 ```
 
+![](./img/48.cli.png)
+
+```hcl
+aws transfer describe-user \
+  --server-id s-3c9c7d5391934e529 \
+  --user-name ernest
+```
+
+**Repeat for idoko.**
+
+
+### Step 2: Confirm Local `.pem` Private Keys Exist
+
+#### Purpose:
+
+Ensure the private keys exist locally to enable SFTP login as `ernest` or `idoko`.
+
+Steps Taken:
+
+I ran:
+
+```hcl
+find ~/Documents/darey-learning/projects/ETL_HEALTH_CARE/ -type f -name "*.pem"
+```
+
+#### Output:
+
+### Step 3: Verify Local Private Key Fingerprints
+
+**Purpose:**
+
+To ensure the local `.pem` keys match the public keys in AWS, confirming key-pair integrity.
+
+**Run:**
+
+```hcl
+ssh-keygen -lf .ssh/idoko.pem
+ssh-keygen -lf .ssh/ernest.pem
+```
+
+Compare the output with what's in the AWS Console:
+
+- idoko key fingerprint: `2f:e8:6c:20:7a:ea:fc:60:ee:1e:f0:a3:89:10:53:b4`
+- ernest key fingerprint: `5e:a9:5a:02:9a:38:f9:cb:bf:83:81:b0:89:5d:d3:d6`
+
+#### To Get the MD5-style Fingerprint
+
+Run:
+
+```hcl
+ssh-keygen -E md5 -lf .ssh/idoko.pem
+ssh-keygen -E md5 -lf .ssh/ernest.pem
+
+```
+
+![](./img/49.confirm-pem-local.png)
+
+![](./img/50.compare-pem.png)
+
+If they match, you're ready to proceed.
+
+### Step 4: Locate the SFTP Endpoint
+
+#### Purpose:
+
+To know where to connect via `SFTP`.
+
+#### Steps Taken:
+
+In the AWS Console:
+
+- Go to **AWS Transfer Family** > **Servers** > Click **Server ID**
+
+- Copy the **Endpoint** URL, e.g.:
+
+```arduino
+s-3c9c7d5391934e529.server.transfer.us-east-1.amazonaws.com
+```
+
+![](./img/51.end-point.png)
+
+### Step 5: Test SFTP Connection (Login)
+
+**Purpose:**
+
+Verify that users can log in using SFTP and their private key.
+
+#### Run:
+
+```bash
+sftp -i ~/.ssh/your-key.pem <username>@<transfer-server-endpoint>
+```
+
+#### Expected Output:
+
+![](./img/52.connected.png)
 
 
 
-Summary:
-- Established two viable methods for CSV upload using FTP and SFTP.
-- Automated infrastructure provisioning with Terraform modules.
-- Integrated IAM policies for secure access.
-- Enabled CI/CD via GitHub Actions for automation.
-- Created documentation and scripts to ensure repeatability and maintainability.
+I am now inside the virtual folder mapped to the **raw S3 bucket**.
+
+### Step 6: Create a Sample `.csv` File for Testing
+
+**Purpose:**
+
+To simulate uploading real data to the **raw bucket**.
+
+#### Run: create the CSV files on your local machine
+
+```bash
+echo "name,age,location" > test_upload.csv
+echo "John,25,Lagos" >> test_upload.csv
+echo "Jane,30,Abuja" >> test_upload.csv
+```
+
+![](./img/53.create-sample-csv.png)
+
+Then, from the same directory, run:
+
+```bash
+sftp -i ~/.ssh/your-key.pem <username>@<transfer-server-endpoint>
+```
+
+Once inside the SFTP session:
+
+```bash
+put sample_upload.csv
+```
+
+Use aws `s3 ls` (if configured) to list contents in the `raw folder`:
+
+```bash
+aws s3 ls s3://your-raw-bucket-name/
+```
+
+#### Terminal Output:
+
+![](./img/55.ernest-console-output.png)
+
+### After upload: How to confirm?
+
+Go to AWS S3 Console → Your raw bucket → Check if the file is there.
+
+### AWS Console Output:
+
+### ernest
+
+![](./img/56.ernest-console-output.png)
+
+#### idoko
+
+![](./img/57.idoko-console-output.png)
+
+#### user folders
+
+![](./img/58.user-folders.png)
+
+### PIPLELINE
+
+![](./img/59.pipeline.png)
 
 ---
 
-This document should guide you clearly through the entire project from environment setup to deployment and usage.
+## Step 12: Cleanup Strategy and Cost Awareness
+
+### Purpose:
+
+To prevent unexpected charges and clean up cloud infrastructure after testing or demonstration.
+
+#### Steps taken:
+
+I removed all provisioned resources after validation using:
+
+```bash
+terraform destroy -auto-approve
+```
+This command ensures that all resources (EC2, VPC, IAM, Transfer Family servers, SSH keys, and S3 permissions) are fully deleted.
+
+**Cost Awareness:**
+
+**Important:** AWS Transfer Family SFTP servers are billed hourly whether in use or not. EC2 instances and other managed services can also incur costs if left running.
+
+It's a best practice to destroy test environments immediately after use, especially for spike or proof-of-concept projects.
 
 ---
 
-I'll prepare the text file and give you the download link next.
+## Conclusion
+
+This project successfully demonstrates two secure methods for CSV uploads: using an EC2-based FTP server and AWS Transfer Family SFTP with automated IAM, SSH key provisioning, and S3 integration.
+
+Key achievements include:
+
+- Fully modular infrastructure using Terraform.
+- Automated setup using GitHub Actions CI/CD.
+- Custom IAM policies for fine-grained access control.
+- Dynamic SSH key and SFTP user provisioning using the tls and local_file providers.
+- Real-world debugging and resolution of IAM permission errors.
+- Cost awareness and cleanup strategy to avoid AWS billing surprises.
+
+By combining modern cloud-native services with reusable infrastructure modules, this solution offers scalability, security, and automation — making it ideal for production or team-based environments.
